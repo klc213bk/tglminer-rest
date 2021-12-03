@@ -67,4 +67,47 @@ public class TglminerController {
 		
 		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
 	}
+	@PostMapping(path="/runHealthService", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> runHealthService() {
+		LOG.info(">>>>controller runHealthService is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			tglminerService.runHealthService();
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", ExceptionUtils.getMessage(e));
+			objectNode.put("returnCode", ExceptionUtils.getStackTrace(e));
+		}
+		
+		LOG.info(">>>>controller runHealthService finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(value="/sendHeartbeat")
+	@ResponseBody
+	public ResponseEntity<Object> sendHeartbeat() throws Exception{
+		
+		LOG.info(">>>>controller sendHeartbeat is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		Long hbtime = null;
+		try {
+			hbtime = tglminerService.sendHeartbeat();
+			objectNode.put("returnCode", "0000");
+			objectNode.put("heartbeatTime", hbtime);
+		} catch (Exception e) {
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", ExceptionUtils.getMessage(e));
+			objectNode.put("returnCode", ExceptionUtils.getStackTrace(e));
+		}
+		
+		LOG.info(">>>>controller sendHeartbeat finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	
+	}
 }

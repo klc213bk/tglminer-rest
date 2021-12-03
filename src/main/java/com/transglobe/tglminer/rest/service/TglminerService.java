@@ -15,10 +15,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
@@ -29,11 +33,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.transglobe.tglminer.rest.bean.EtlNameBo.ConsumerStatusEnum;
+import com.transglobe.tglminer.rest.bean.EtlNameBo.WithSyncEnum;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.transglobe.tglminer.rest.bean.HealthETL;
-import com.transglobe.tglminer.rest.bean.HealthTopicEnum;
 import com.transglobe.tglminer.rest.bean.TglminerSPEnum;
 import com.transglobe.tglminer.rest.bean.TglminerTableEnum;
 
@@ -56,7 +59,19 @@ public class TglminerService {
 
 	@Value("${kafka.rest.url}")
 	private String kafkaRestUrl;
-	
+
+	@Value("${health.rest.url}")
+	private String healthRestUrl;
+
+	@Value("${connector.name}")
+	private String connectorName;
+
+	@Value("${health.etl.name}")
+	private String healthEtlName;
+
+	@Autowired
+	KafkaService kafkaService;
+
 	public void cleanup() throws Exception{
 		Connection conn = null;
 		PreparedStatement pstmt = null;
@@ -103,117 +118,53 @@ public class TglminerService {
 				}
 			}
 			pstmt.close();
+
 		} finally {
 			if (rs != null) rs.close();
 			if (pstmt != null) pstmt.close();
 			if (conn != null) conn.close();
 		}
-	
+
 	}
 	public void initialize() throws Exception{
 		Connection conn = null;
-		
+
 		CallableStatement cstmt = null;
 		try {
 			Class.forName(tglminerDbDriver);
 			conn = DriverManager.getConnection(tglminerDbUrl, tglminerDbUsername, tglminerDbPassword);
 			conn.setAutoCommit(false);
-			
+
 			for (TglminerTableEnum e : TglminerTableEnum.values()) {
 				LOG.info(">>>>>>> create TABLE file {}",e.getScriptFile());
 				executeSqlScriptFromFile(conn, e.getScriptFile());
 			}
 			conn.commit();
-			
+
 			for (TglminerSPEnum e : TglminerSPEnum.values()) {
 				LOG.info(">>>>>>> create SP file {}",e.getScriptFile());
 				executeSqlScriptFromFile(conn, e.getScriptFile());
 			}
 			conn.commit();
-			
-			// insert data
-			LOG.info(">>> insert etl name ");
-			cstmt = conn.prepareCall("{call SP_INS_ETL_NAME(?,?,?,?,?)}");
 
-			cstmt.setString(1,  HealthETL.CAT);
-			cstmt.setString(2,  HealthETL.NAME);
-			cstmt.setInt(3,  0);
-			cstmt.setString(4, ConsumerStatusEnum.REGISTERED.name());
-			cstmt.setString(5,  HealthETL.NOTE);
-			cstmt.execute();
-			cstmt.close();
-			
-			conn.commit();
-			
-			LOG.info(">>> insert kafka topic");
-			insertTopic(conn, HealthETL.NAME, HealthTopicEnum.DDL.getTopic());
-			insertTopic(conn, HealthETL.NAME, HealthTopicEnum.HEARTBEAT.getTopic());
-			conn.commit();
-			
-			LOG.info(">>> insert logminer table");
-//			deleteLogminerTable(conn, HealthETL.NAME);
-			insertLogminerTable(conn, HealthETL.NAME, TglminerTableEnum.TM_HEARTBEAT.getTableName());
-			conn.commit();
-			
-			conn.close();
+
 		} finally {
 			if (cstmt != null) cstmt.close();
 			if (conn != null) conn.close();
 		}
-	
+
 	}
-	private void insertTopic(Connection conn, String etlName, String topic) throws Exception{
-		LOG.info(">>>>>>>>>> insertTopic,{},{}", etlName, topic);
+	public void runHealthService() throws Exception{
+		LOG.info(">>>>>>>>>>>> runHealthService running ....");
 
-		CallableStatement cstmt = null;
-		try {	
-			
-			Set<String> topicset = getTableKafkaTopics(conn, etlName);
-			if (!topicset.contains(topic)) {
-				cstmt = conn.prepareCall("{call SP_INS_KAFKA_TOPIC(?,?)}");
-				cstmt.setString(1,  etlName);
-				cstmt.setString(2,  topic);
-				cstmt.execute();
-				cstmt.close();
-
-			}
-			String response = kafkaRestService(kafkaRestUrl+"/listTopics", "GET");
-			ObjectMapper mapper = new ObjectMapper();
-			JsonNode jsonNode = mapper.readTree(response);
-			String returnCode = jsonNode.get("returnCode").asText();
-			String topicStr = jsonNode.get("topics").asText();
-			
-			List<String> topicList = mapper.readValue(topicStr, new TypeReference<List<String>>() {});
-			Set<String> topicSet = new HashSet<>(topicList);
-			
-			LOG.info(">>>>>>>>>> returnCode={}, topicstr={}", returnCode, topicStr);
-			if (topicSet.contains(topic)) {
-				kafkaRestService(kafkaRestUrl+"/deleteTopic/" + topic, "POST");
-				LOG.info(">>>>>>>>>>>> topic={} deleted ", topic);
-			
-			}
-
-			kafkaRestService(kafkaRestUrl+"/createTopic/"+topic, "POST");
-			LOG.info(">>>>>>>>>>>> topic={} created ", topic);
-			
-		} catch (Exception e1) {
-
-			LOG.error(">>>>> Error!!!, error msg={}, stacetrace={}", ExceptionUtils.getMessage(e1), ExceptionUtils.getStackTrace(e1));
-
-			throw e1;
-		} finally {
-			if (cstmt != null) cstmt.close();
-		}
-	}
-	private String kafkaRestService(String urlStr, String requestMethod) throws Exception {
-		LOG.info(">>>>>>>>>>>> kafka service urlStr={}", urlStr);
-
+		String urlStr = healthRestUrl + "/startHealthConsumer";
+		LOG.info(">>>> start health consumer url={}", urlStr);
 		HttpURLConnection httpConn = null;
 		URL url = null;
 		try {
 			url = new URL(urlStr);
 			httpConn = (HttpURLConnection)url.openConnection();
-			httpConn.setRequestMethod(requestMethod);
+			httpConn.setRequestMethod("POST");
 			int responseCode = httpConn.getResponseCode();
 			//			LOG.info(">>>>>  responseCode={}",responseCode);
 
@@ -225,22 +176,104 @@ public class TglminerService {
 			}
 			in.close();
 
-			LOG.info(">>>>> sendHeartbeat responsecode={}, response={}", responseCode, response.toString());
+			LOG.info(">>>>> kafkaRestService responsecode={}, response={}", responseCode, response.toString());
 
-			return response.toString();
 		} finally {
 			if (httpConn != null ) httpConn.disconnect();
 		}
+
+		Thread.sleep(20000);
+
+		// restart connector
+		LOG.info(">>>> resetOffset add sync table");
+		String status = restartConnector(healthEtlName, Boolean.TRUE, 1, ConsumerStatusEnum.STARTED);
+		LOG.info(">>>> connector status={}", status);
+
+		//		LOG.info(">>>> start scheduler ...");
+		//		startScheduler();
+
+
+		LOG.info(">>>>>>>>>>>> runHealth running end");
 	}
-	private void insertLogminerTable(Connection conn, String etlName, String tableName) throws Exception{
-		LOG.info(">>>>>>>>>> insertLogminerTable");
+	/**
+	 * 
+	 * @param etlName
+	 * @param resetOffset
+	 * @param syncTableOption, 0: no change, 1 add sync tables, -1 remove sync tables
+	 * @return
+	 * @throws Exception
+	 */
+	public String restartConnector(String etlName, Boolean resetOffset, Integer syncTableOption, ConsumerStatusEnum consumerStatus) throws Exception {
+		Map<String,String> configmap = kafkaService.getConnectorConfig(connectorName);
+		LOG.info(">>>> configmap={}", configmap);
+
+		if (Boolean.TRUE.equals(resetOffset)) {
+			configmap.put("reset.offset", "true");
+		} else {
+			configmap.put("reset.offset", "false");
+		}
+
+		Connection conn = null;
+
+		try {
+			Class.forName(tglminerDbDriver);
+			conn = DriverManager.getConnection(tglminerDbUrl,tglminerDbUsername, tglminerDbPassword);
+
+			final Set<String> tableSet = getLogminerTables(conn, etlName);
+
+			if (syncTableOption == 1) {
+
+				String newsyncTables = String.join(",", tableSet);	
+				LOG.info(">>>> add sync table:{}", newsyncTables);
+
+				// "reset.offset", "table.whitelist"
+				String newtableWhitelist = configmap.get("table.whitelist") + "," + newsyncTables;
+				configmap.put("table.whitelist", newtableWhitelist);
+
+				updateETLName(conn, etlName, WithSyncEnum.SYNC, consumerStatus);
+
+
+			} else if (syncTableOption == -1) {
+				LOG.info(">>>> remove sync tableSet:{}", String.join(",", tableSet));
+
+				String[] tableArr = configmap.get("table.whitelist").split(",");
+				List<String> tableList = Arrays.asList(tableArr);
+				LOG.info(">>>> existing sync tableList:{}", String.join(",", tableList));
+
+				String newtableWhitelist = tableList.stream().filter(s -> !tableSet.contains(s)).collect(Collectors.joining(","));
+				LOG.info(">>>> new newtableWhitelist={}", newtableWhitelist);
+
+				configmap.put("table.whitelist", newtableWhitelist);
+
+				updateETLName(conn, etlName, WithSyncEnum.NO_SYNC, consumerStatus);
+
+			} 
+
+			LOG.info(">>>> new configmap={}", configmap);
+
+			String status = doRestartConnector(connectorName, configmap);
+
+			updateLogminerConnectorStatus(conn,status);		
+
+			return status;
+			
+		} finally {
+			if (conn != null) conn.close();
+		}
+
+
+	}
+	public void updateETLName(Connection conn, String etlName, WithSyncEnum withSyncEnum, ConsumerStatusEnum consumerStatus) throws Exception {
 		PreparedStatement pstmt = null;
 		String sql = null;
-		try {			
-			sql = "insert into TM_LOGMINER_TABLE (ETL_NAME,TABLE_NAME) values (?,?)";
+		try {
+
+			sql = "update TM_ETL_NAME set WITH_SYNC=?, CONSUMER_STATUS=? where ETL_NAME=?";
 			pstmt = conn.prepareStatement(sql);
-			pstmt.setString(1, etlName);
-			pstmt.setString(2, tableName);
+
+			pstmt.setInt(1,  (WithSyncEnum.SYNC == withSyncEnum)? 1 : 0);
+			pstmt.setString(2,  consumerStatus.name());
+			pstmt.setString(3,  etlName);
 			pstmt.executeUpdate();
 			pstmt.close();
 
@@ -253,30 +286,54 @@ public class TglminerService {
 			if (pstmt != null) pstmt.close();
 		}
 	}
-	private Set<String> getTableKafkaTopics(Connection conn, String etlName) throws Exception {
+	public Long sendHeartbeat() throws Exception{
+		Connection conn = null;
+		CallableStatement cstmt = null;
 
-		PreparedStatement pstmt = null;
-		ResultSet rs = null;
-		String sql = null;
-		Set<String> topicset = new HashSet<>();
-		try {
-			
-			sql = "select TOPIC from " + TglminerTableEnum.TM_KAFKA_TOPIC + " where ETL_NAME=?";
-			pstmt = conn.prepareStatement(sql);
-			pstmt.setString(1, etlName);
-			rs = pstmt.executeQuery();
-			while (rs.next()) {
-				topicset.add(rs.getString("TOPIC"));
-			}
-			rs.close();
-			pstmt.close();
+		try {	
+			Class.forName(tglminerDbDriver);
+			conn = DriverManager.getConnection(tglminerDbUrl, tglminerDbUsername, tglminerDbPassword);
 
-			return topicset;
+			cstmt = conn.prepareCall("{call SP_INS_HEALTH_HEARTBEAT(?)}");
+
+			long currMillis = System.currentTimeMillis();
+			cstmt.setTimestamp(1, new Timestamp(currMillis));
+			cstmt.execute();
+
+			return currMillis;
+
+		} catch (Exception e1) {
+			LOG.error(">>>>> Error!!!, error msg={}, stacetrace={}", ExceptionUtils.getMessage(e1), ExceptionUtils.getStackTrace(e1));
+			throw e1;
 		} finally {
-			if (rs != null) rs.close();
-			if (pstmt != null) pstmt.close();
+			if (cstmt != null) cstmt.close();
+			if (conn != null) conn.close();
 		}
+
 	}
+	//
+	private String doRestartConnector(String connectorName, Map<String,String> configmap) throws Exception {
+		LOG.info(">>>> restartConnector...");
+
+		LOG.info(">>>> pause connector");
+		kafkaService.pauseConnector(connectorName);
+
+		LOG.info(">>>> delete connector");
+		kafkaService.deleteConnector(connectorName);
+
+		LOG.info(">>>> add sync table to config's whitelist");
+
+		LOG.info(">>>> create connector");
+		boolean result = kafkaService.createConnector(connectorName, configmap);
+		LOG.info(">>>> create connector result={}", result);
+
+		String status = kafkaService.getConnectorStatus(connectorName);
+
+		LOG.info(">>>> connector status={}", status);
+
+		return status;
+	}
+
 	private void executeSqlScriptFromFile(Connection conn, String file) throws Exception {
 		LOG.info(">>>>>>>>>>>> executeSqlScriptFromFile file={}", file);
 
@@ -321,9 +378,56 @@ public class TglminerService {
 			throw e1;
 		} finally {
 			if (stmt != null) stmt.close();
-			
+
 		}
 
 	}
-	
+	public void updateLogminerConnectorStatus(Connection conn, String status) throws Exception {
+
+		PreparedStatement pstmt = null;
+		String sql = null;
+
+		try {
+
+			sql = "update TM_LOGMINER_OFFSET SET STATUS=? where start_time = \n" +
+					" (select start_time from TM_LOGMINER_OFFSET order by start_time desc \n" +
+					" fetch next 1 row only)";
+			pstmt = conn.prepareStatement(sql);
+			pstmt.setString(1, status);
+			pstmt.executeUpdate();
+			pstmt.close();
+
+		} finally {
+			if (pstmt != null) pstmt.close();
+		}
+	}
+	public Set<String> getLogminerTables(Connection conn, String etlName) throws Exception {
+
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
+		String sql = null;
+		Set<String> tableSet = new HashSet<>();
+		try {
+
+			sql = "select TABLE_NAME from TM_LOGMINER_TABLE where ETL_NAME=?";
+			pstmt = conn.prepareStatement(sql);
+			pstmt.setString(1, etlName);
+			rs = pstmt.executeQuery();
+			while (rs.next()) {
+				tableSet.add(rs.getString("TABLE_NAME"));
+			}
+			pstmt.close();
+
+			return tableSet;
+		} catch (Exception e1) {
+
+			LOG.error(">>>>> Error!!!, error msg={}, stacetrace={}", ExceptionUtils.getMessage(e1), ExceptionUtils.getStackTrace(e1));
+
+			throw e1;
+		} finally {
+			if (rs != null) rs.close();
+			if (pstmt != null) pstmt.close();
+		}
+
+	}
 }
