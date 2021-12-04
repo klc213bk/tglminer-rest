@@ -2,19 +2,33 @@ package com.transglobe.tglminer.rest.service;
 
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.transglobe.tglminer.rest.util.HttpUtils;
 
 
 @Service
@@ -23,6 +37,81 @@ public class KafkaService {
 	
 	@Value("${connect.rest.url}")
 	private String connectRestUrl;
+	
+	@Value("${kafka.rest.url}")
+	private String kafkaRestUrl;
+	
+	@Value("${kafka.server.home}")
+	private String kafkaServerHome;
+	
+	@Value("${kafka.bootstrap.server}")
+	private String kafkaBootstrapServer;
+	
+	private Process listTopicsProcess;
+	
+	private Process deleteTopicProcess;
+
+	private Process createTopicProcess;
+	
+	public Map<String,String> getUpdatedConnectorConfigMap(String connectorName, Boolean resetOffset, Integer syncTableOption, Set<String> tableSet) throws Exception {
+		Map<String,String> configmap = getConnectorConfig(connectorName);
+		LOG.info(">>>> configmap={}", configmap);
+
+		if (Boolean.TRUE.equals(resetOffset)) {
+			configmap.put("reset.offset", "true");
+		} else {
+			configmap.put("reset.offset", "false");
+		}
+
+		if (syncTableOption == 1) {
+			String newsyncTables = String.join(",", tableSet);	
+			LOG.info(">>>> add sync table:{}", newsyncTables);
+
+			// "reset.offset", "table.whitelist"
+			String newtableWhitelist = configmap.get("table.whitelist") + "," + newsyncTables;
+			configmap.put("table.whitelist", newtableWhitelist);
+
+
+		} else if (syncTableOption == -1) {
+			LOG.info(">>>> remove sync tableSet:{}", String.join(",", tableSet));
+
+			String[] tableArr = configmap.get("table.whitelist").split(",");
+			List<String> tableList = Arrays.asList(tableArr);
+			LOG.info(">>>> existing sync tableList:{}", String.join(",", tableList));
+
+			String newtableWhitelist = tableList.stream().filter(s -> !tableSet.contains(s)).collect(Collectors.joining(","));
+			LOG.info(">>>> new newtableWhitelist={}", newtableWhitelist);
+
+			configmap.put("table.whitelist", newtableWhitelist);
+
+
+		} 
+
+		LOG.info(">>>> new configmap={}", configmap);
+
+		return configmap;
+	}
+	public String restartConnector(String connectorName, Map<String,String> configmap) throws Exception {
+		LOG.info(">>>> restartConnector...");
+
+		LOG.info(">>>> pause connector");
+		pauseConnector(connectorName);
+
+		LOG.info(">>>> delete connector");
+		deleteConnector(connectorName);
+
+		LOG.info(">>>> add sync table to config's whitelist");
+
+		LOG.info(">>>> create connector");
+		boolean result =createConnector(connectorName, configmap);
+		LOG.info(">>>> create connector result={}", result);
+
+		String status = getConnectorStatus(connectorName);
+
+		LOG.info(">>>> connector status={}", status);
+
+		return status;
+	}
 	
 	public Map<String,String> getConnectorConfig(String connectorName) throws Exception {
 		Map<String,String> configmap = new HashMap<>();
@@ -227,5 +316,166 @@ public class KafkaService {
 		} finally {
 			if (httpCon != null ) httpCon.disconnect();
 		}
+	}
+	
+	public Set<String> listTopics() throws Exception {
+		LOG.info(">>>>>>>>>>>> listTopics ");
+		List<String> topics = new ArrayList<String>();
+		try {
+			if (listTopicsProcess == null || !listTopicsProcess.isAlive()) {
+				ProcessBuilder builder = new ProcessBuilder();
+				String script = "./bin/kafka-topics.sh" + " --list --bootstrap-server " + kafkaBootstrapServer;
+				builder.command("sh", "-c", script);
+//				builder.command(kafkaTopicsScript + " --list --bootstrap-server " + kafkaBootstrapServer);
+				
+//				builder.command(kafkaTopicsScript, "--list", "--bootstrap-server", kafkaBootstrapServer);
+				
+				builder.directory(new File(kafkaServerHome));
+				listTopicsProcess = builder.start();
+
+				ExecutorService listTopicsExecutor = Executors.newSingleThreadExecutor();
+				listTopicsExecutor.submit(new Runnable() {
+
+					@Override
+					public void run() {
+						BufferedReader reader = new BufferedReader(new InputStreamReader(listTopicsProcess.getInputStream()));
+						reader.lines().forEach(topic -> topics.add(topic));
+					}
+
+				});
+				int exitVal = listTopicsProcess.waitFor();
+				if (exitVal == 0) {
+
+					LOG.info(">>> Success!!! listTopics, exitVal={}", exitVal);
+				} else {
+					LOG.error(">>> Error!!! listTopics, exitcode={}", exitVal);
+					String errStr = (topics.size() > 0)? topics.get(0) : "";
+					throw new Exception(errStr);
+				}
+				
+				
+			} else {
+				LOG.warn(" >>> listTopics is currently Running.");
+			}
+		} catch (IOException e) {
+			LOG.error(">>> Error!!!, listTopics, msg={}, stacktrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+			throw e;
+		} catch (InterruptedException e) {
+			LOG.error(">>> Error!!!, listTopics, msg={}, stacktrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+			throw e;
+		}
+		return new HashSet<>(topics);
+	}
+	public void createTopic(String topic) throws Exception {
+		LOG.info(">>>>>>>>>>>> createTopic topic=={}", topic);
+		try {
+			if (createTopicProcess == null || !createTopicProcess.isAlive()) {
+				ProcessBuilder builder = new ProcessBuilder();
+				String script = "./bin/kafka-topics.sh --create --bootstrap-server " + kafkaBootstrapServer + " --replication-factor 1 --partitions 1 --topic " + topic;
+				builder.command("sh", "-c", script);
+
+				builder.directory(new File(kafkaServerHome));
+				createTopicProcess = builder.start();
+
+				int exitVal = createTopicProcess.waitFor();
+				if (exitVal == 0) {
+					LOG.info(">>> Success!!! createTopic:{}, exitcode={}", topic, exitVal);
+				} else {
+					LOG.error(">>> Error!!! createTopic:{}, exitcode={}", topic, exitVal);
+				}
+				LOG.info(">>> createTopicProcess isalive={}", createTopicProcess.isAlive());
+				if (!createTopicProcess.isAlive()) {
+					createTopicProcess.destroy();
+				}
+				
+				
+				//				if (!createTopicProcess.isAlive()) {
+				//					LOG.info(">>>  createTopicProcess isAlive={}", createTopicProcess.isAlive());
+				//					createTopicExecutor.shutdown();
+				//					if (!createTopicExecutor.isTerminated()) {
+				//						LOG.info(">>> createTopicExecutor is not Terminated, prepare to shutdown executor");
+				//						createTopicExecutor.shutdownNow();
+				//
+				//						try {
+				//							createTopicExecutor.awaitTermination(600, TimeUnit.SECONDS);
+				//						} catch (InterruptedException e) {
+				//							LOG.error(">>> ERROR!!!, msg={}, stacetrace={}",
+				//									ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+				//						}
+				//
+				//					} else {
+				//						LOG.warn(">>> createTopicExecutor is already terminated");
+				//					}
+				//				} else {
+				//					LOG.info(">>>  createTopicProcess isAlive={}, destroy it", createTopicProcess.isAlive());
+				//					createTopicProcess.destroy();
+				//				}
+
+			} else {
+				LOG.warn(" >>> createTopic is currently Running.");
+			}
+		} catch (IOException e) {
+			LOG.error(">>> Error!!!, createTopic, msg={}, stacktrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+			throw e;
+		} catch (InterruptedException e) {
+			LOG.error(">>> Error!!!, createTopic, msg={}, stacktrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+			throw e;
+		} 
+	}
+	public void deleteTopic(String topic) throws Exception {
+		LOG.info(">>>>>>>>>>>> deleteTopic topic=={}", topic);
+		try {
+			if (deleteTopicProcess == null || !deleteTopicProcess.isAlive()) {
+				ProcessBuilder builder = new ProcessBuilder();
+				String script = "./bin/kafka-topics.sh --delete --bootstrap-server " + kafkaBootstrapServer + " --topic " + topic;
+				builder.command("sh", "-c", script);
+
+				builder.directory(new File(kafkaServerHome));
+				deleteTopicProcess = builder.start();
+
+				int exitVal = deleteTopicProcess.waitFor();
+				if (exitVal == 0) {
+					LOG.info(">>> Success!!! deleteTopic:{}, exitcode={}", topic, exitVal);
+				} else {
+					LOG.error(">>> Error!!! deleteTopic:{}, exitcode={}", topic, exitVal);
+				}
+				LOG.info(">>> deleteTopicProcess isalive={}", deleteTopicProcess.isAlive());
+				if (!deleteTopicProcess.isAlive()) {
+					deleteTopicProcess.destroy();
+				}
+				
+				
+				//				if (!createTopicProcess.isAlive()) {
+				//					LOG.info(">>>  createTopicProcess isAlive={}", createTopicProcess.isAlive());
+				//					createTopicExecutor.shutdown();
+				//					if (!createTopicExecutor.isTerminated()) {
+				//						LOG.info(">>> createTopicExecutor is not Terminated, prepare to shutdown executor");
+				//						createTopicExecutor.shutdownNow();
+				//
+				//						try {
+				//							createTopicExecutor.awaitTermination(600, TimeUnit.SECONDS);
+				//						} catch (InterruptedException e) {
+				//							LOG.error(">>> ERROR!!!, msg={}, stacetrace={}",
+				//									ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+				//						}
+				//
+				//					} else {
+				//						LOG.warn(">>> createTopicExecutor is already terminated");
+				//					}
+				//				} else {
+				//					LOG.info(">>>  createTopicProcess isAlive={}, destroy it", createTopicProcess.isAlive());
+				//					createTopicProcess.destroy();
+				//				}
+
+			} else {
+				LOG.warn(" >>> deleteTopic is currently Running.");
+			}
+		} catch (IOException e) {
+			LOG.error(">>> Error!!!, deleteTopic, msg={}, stacktrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+			throw e;
+		} catch (InterruptedException e) {
+			LOG.error(">>> Error!!!, deleteTopic, msg={}, stacktrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+			throw e;
+		} 
 	}
 }
