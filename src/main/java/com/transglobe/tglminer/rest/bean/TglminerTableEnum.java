@@ -19,7 +19,6 @@ public enum TglminerTableEnum {
 		this.tableName = tableName;
 		this.scriptFile = scriptFile;
 	}
-
 	
 	public String getSchema() {
 		return schema;

@@ -7,7 +7,10 @@ create or replace PROCEDURE GET_STREAMING_ETL_STATE (
   v_client_id VARCHAR2(30);
 BEGIN
     
-    v_client_id := 'partycontact1-1';
+    IF i_etl_name = 'PARTY_CONTACT' THEN
+      v_client_id := 'partycontact1-1';
+    END IF;
+    
   FOR rec IN (SELECT * FROM TM_HEALTH ORDER BY HEARTBEAT_TIME DESC FETCH NEXT 5 ROWS ONLY)
   LOOP
     IF rec.CONSUMER_CLIENT IS NOT NULL THEN

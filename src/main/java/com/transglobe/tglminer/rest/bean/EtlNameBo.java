@@ -3,7 +3,7 @@ package com.transglobe.tglminer.rest.bean;
 public class EtlNameBo {
 	
 	public static enum WithSyncEnum {
-		SYNC,NO_SYNC;
+		SYNC,DROP_SYNC;
 	}
 	public static enum ConsumerStatusEnum {
 		REGISTERED, STARTED, RECEVING, STOPPED;

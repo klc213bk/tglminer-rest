@@ -165,7 +165,7 @@ public class KafkaHealthConsumer implements Runnable {
 				
 				
 				
-				cstmt = conn.prepareCall("{call SPHE_HEALTH_CONSUMER_RECEIVED(?,?,?,?)}");
+				cstmt = conn.prepareCall("{call SP_HEALTH_CONSUMER_RECEIVED(?,?,?,?)}");
 				cstmt.setString(1,  HealthETL.NAME);
 				cstmt.setString(2,  clientId);
 				cstmt.setTimestamp(3,  heartbeatTime);

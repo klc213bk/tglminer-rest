@@ -1,25 +1,15 @@
 package com.transglobe.tglminer.rest.service;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.sql.Types;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-
-import org.apache.commons.dbcp2.BasicDataSource;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,16 +19,12 @@ import org.springframework.stereotype.Service;
 
 import com.transglobe.tglminer.rest.bean.EtlNameBo.ConsumerStatusEnum;
 import com.transglobe.tglminer.rest.bean.EtlNameBo.WithSyncEnum;
-import com.transglobe.tglminer.rest.bean.HealthTopicEnum;
+import com.transglobe.tglminer.rest.util.HttpUtils;
 
 
 @Service
 public class TglminerService {
 	static final Logger LOG = LoggerFactory.getLogger(TglminerService.class);
-
-	private static final String CONSUMER_GROUP = "health";
-
-	public static final String CLIENT_ID = "health-1";
 
 	@Value("${tglminer.db.driver}")
 	private String tglminerDbDriver;
@@ -55,10 +41,12 @@ public class TglminerService {
 	@Value("${kafka.bootstrap.server}")
 	private String kafkaBootstapServer;
 
+	@Value("${logminer.rest.url}")
+	private String logminerResturl;
 
-	//	@Value("${kafka.rest.url}")
-	//	private String kafkaRestUrl;
-	//
+	@Value("${partycontact.rest.url}")
+	private String partycontactRestUrl;
+	
 	@Value("${connector.name}")
 	private String connectorName;
 	//
@@ -82,28 +70,190 @@ public class TglminerService {
 			conn = DriverManager.getConnection(tglminerDbUrl,tglminerDbUsername, tglminerDbPassword);
 			//
 			LOG.info(">>>> start health consumer ");
-			healthService.startHealthConsumer();
-			LOG.info(">>>> health consumer started!!!");
+			if (healthService.isConsumerClosed()) {
+				healthService.startHealthConsumer();
+				LOG.info(">>>> health consumer is started!!!");
+			} else {
+				LOG.info(">>>> health consumer IS ALREADY STARTED.!!!");
+			}
 
-			// restart connector
-			LOG.info(">>>> resetOffset add sync table");
-			Set<String> tableSet = getLogminerTables(conn, healthEtlName);
-			Map<String,String> configmap = kafkaService.getUpdatedConnectorConfigMap(connectorName, Boolean.TRUE, 1, tableSet) ;
-				
-			kafkaService.restartConnector(connectorName, configmap);
-			
-			
-			//		LOG.info(">>>> connector status={}", status);
+			LOG.info(">>>> applyLogminerSync etlname={}", healthEtlName);
+			applyLogminerSync(healthEtlName);
 
-			//		LOG.info(">>>> start scheduler ...");
-			//		startScheduler();
+			LOG.info(">>>> start heratbeat ");
+			healthService.startHeartbeat();
+			LOG.info(">>>> heratbeat started!!!");
+
 		} finally {
 			if (conn != null) conn.close();
 		}
 
 		LOG.info(">>>>>>>>>>>> runHealth running end");
 	}
+	public void stopHealthService() throws Exception{
+		LOG.info(">>>>>>>>>>>> runHealthService running ....");
 
+		Connection conn = null;
+
+		try {
+			Class.forName(tglminerDbDriver);
+			conn = DriverManager.getConnection(tglminerDbUrl,tglminerDbUsername, tglminerDbPassword);
+			
+			LOG.info(">>>> stop heratbeat ");
+			healthService.stopHeartbeat();
+			LOG.info(">>>> stop heratbeat end!!!");
+			
+			LOG.info(">>>> dropLogminerSync etlname={}", healthEtlName);
+			dropLogminerSync(healthEtlName);
+			
+			//
+			LOG.info(">>>> stop health consumer ");
+			if (!healthService.isConsumerClosed()) {
+				healthService.stopHealthConsumer();
+				LOG.info(">>>> health consumer is closed!!!");
+			} else {
+				LOG.info(">>>> health consumer IS ALREADY CLOSED.!!!");
+			}
+
+			
+
+			
+
+		} finally {
+			if (conn != null) conn.close();
+		}
+
+		LOG.info(">>>>>>>>>>>> runHealth running end");
+	}
+	public String applyLogminerSync(String etlName) throws Exception {
+		Connection conn = null;
+
+		try {
+			Class.forName(tglminerDbDriver);
+			conn = DriverManager.getConnection(tglminerDbUrl,tglminerDbUsername, tglminerDbPassword);
+
+			// restart connector
+			LOG.info(">>>> resetOffset add sync table");
+			Set<String> tableSet = getLogminerTables(conn, etlName);
+			LOG.info(">>>> tableSet={}", String.join(",", tableSet));
+			Map<String,String> configmap = kafkaService.getUpdatedConnectorConfigMap(connectorName, Boolean.TRUE, WithSyncEnum.SYNC, tableSet) ;
+			String restartConnectorStatus = kafkaService.restartConnector(connectorName, configmap);
+			LOG.info(">>>> connector status={}", restartConnectorStatus);
+
+			String tableWhitelist = configmap.get("table.whitelist");
+			String kafkaTopics = String.join(",", kafkaService.listTopics());
+			LOG.info(">>>> tableWhitelist={}, kafkaTopics={}",tableWhitelist,  kafkaTopics);
+
+			//update connector status
+			updateLogminerConnectorStatus(conn, tableWhitelist,kafkaTopics, restartConnectorStatus);
+
+			// update ETL status
+			updateETLName(conn, etlName, WithSyncEnum.SYNC, ConsumerStatusEnum.STARTED);
+			LOG.info(">>>> update etl name sync={}, consumerstatus={}", WithSyncEnum.SYNC, ConsumerStatusEnum.STARTED);
+
+			return restartConnectorStatus;
+
+		} finally {
+			if (conn != null) conn.close();
+		}
+	}
+	public void checkToRestart()  throws Exception {
+		LOG.info(">>>> checkToRestart ...");
+
+		Connection conn = null;
+		CallableStatement cstmt = null;
+		try {
+			Class.forName(tglminerDbDriver);
+			conn = DriverManager.getConnection(tglminerDbUrl,tglminerDbUsername, tglminerDbPassword);
+
+			cstmt = conn.prepareCall("{call GET_STREAMING_ETL_STATE(?,?)}");
+			cstmt.setString(1,  "PARTY_CONTACT");
+			cstmt.registerOutParameter(2, Types.VARCHAR);
+			cstmt.execute();
+			String state = cstmt.getString(2);
+			
+			String response = "";
+			LOG.info(">>>> health status:{}", state);
+			if (StringUtils.equalsIgnoreCase("STANDBY",state)) {
+				LOG.info(">>>> stop party contact");
+				String stopPartycontactUrl = partycontactRestUrl + "/partycontact/stopPartyContact";
+				LOG.info(">>>>>>> stopPartycontactUrl={}", stopPartycontactUrl); 
+				response = HttpUtils.restService(stopPartycontactUrl, "POST");
+				
+				LOG.info(">>>> stop health service");
+				stopHealthService();
+				
+				LOG.info(">>>> stop logminer connector");
+				String stopConnectorUrl = logminerResturl + "/logminer/stopConnector";
+				HttpUtils.restService(stopConnectorUrl, "POST");
+				
+				Thread.sleep(20000);
+				
+				LOG.info(">>>> start logminer connector");
+				String startConnectorUrl = logminerResturl + "/logminer/startConnector";
+				HttpUtils.restService(startConnectorUrl, "POST");
+				
+
+				LOG.info(">>>> runHealthService");
+				runHealthService();
+				
+				LOG.info(">>>> run party contact");
+				String runPartycontactUrl = partycontactRestUrl + "/partycontact/runPartyContact";
+				LOG.info(">>>>>>> runPartycontactUrl={}", runPartycontactUrl); 
+				response = HttpUtils.restService(runPartycontactUrl, "POST");
+				
+				LOG.info(">>>> checkToRestart .done !!!!..");
+			} else {
+				LOG.info(">>>> VERY HEATHY !! No need to restart");
+			}
+		} finally {
+			if (conn != null) conn.close();
+		}
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		LOG.info(">>>> restarting .Done!!!!..");
+	}
+	public String dropLogminerSync(String etlName) throws Exception {
+		Connection conn = null;
+
+		try {
+			Class.forName(tglminerDbDriver);
+			conn = DriverManager.getConnection(tglminerDbUrl,tglminerDbUsername, tglminerDbPassword);
+
+			// restart connector
+			LOG.info(">>>> resetOffset add sync table");
+			Set<String> tableSet = getLogminerTables(conn, etlName);
+			LOG.info(">>>> tableSet={}", String.join(",", tableSet));
+			Map<String,String> configmap = kafkaService.getUpdatedConnectorConfigMap(connectorName, Boolean.FALSE, WithSyncEnum.DROP_SYNC, tableSet) ;
+			String restartConnectorStatus = kafkaService.restartConnector(connectorName, configmap);
+			LOG.info(">>>> drop sync connector status={}", restartConnectorStatus);
+
+
+			String tableWhitelist = configmap.get("table.whitelist");
+			String kafkaTopics = String.join(",", kafkaService.listTopics());
+			LOG.info(">>>> tableWhitelist={}, kafkaTopics={}",tableWhitelist,  kafkaTopics);
+
+			//update connector status
+			updateLogminerConnectorStatus(conn, tableWhitelist,kafkaTopics, restartConnectorStatus);
+
+			// update ETL status
+			updateETLName(conn, etlName, WithSyncEnum.DROP_SYNC, ConsumerStatusEnum.STOPPED);
+			LOG.info(">>>> update etl name sync={}, consumerstatus={}", WithSyncEnum.SYNC, ConsumerStatusEnum.STARTED);
+
+			return restartConnectorStatus;
+
+		} finally {
+			if (conn != null) conn.close();
+		}
+	}
 
 	/**
 	 * 
@@ -203,18 +353,20 @@ public class TglminerService {
 
 
 
-	private void updateLogminerConnectorStatus(Connection conn, String status) throws Exception {
+	private void updateLogminerConnectorStatus(Connection conn, String tableWhitelist, String kafkaTopics, String restartConnectorStatus) throws Exception {
 
 		PreparedStatement pstmt = null;
 		String sql = null;
 
 		try {
 
-			sql = "update TM_LOGMINER_OFFSET SET STATUS=? where start_time = \n" +
+			sql = "update TM_LOGMINER_OFFSET SET TABLE_WHITE_LIST=?,KAFKA_TOPICS=?,STATUS=? where start_time = \n" +
 					" (select start_time from TM_LOGMINER_OFFSET order by start_time desc \n" +
 					" fetch next 1 row only)";
 			pstmt = conn.prepareStatement(sql);
-			pstmt.setString(1, status);
+			pstmt.setString(1, tableWhitelist);
+			pstmt.setString(2, kafkaTopics);
+			pstmt.setString(3, restartConnectorStatus);
 			pstmt.executeUpdate();
 			pstmt.close();
 

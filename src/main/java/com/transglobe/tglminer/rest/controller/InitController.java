@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
@@ -41,12 +42,84 @@ public class InitController {
 			initService.cleanup();
 			objectNode.put("returnCode", "0000");
 		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
 			objectNode.put("returnCode", "-9999");
-			objectNode.put("errMsg", ExceptionUtils.getMessage(e));
-			objectNode.put("returnCode", ExceptionUtils.getStackTrace(e));
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stackTrace={}", errMsg, stackTrace);
 		}
 		
 		LOG.info(">>>>controller cleanup finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/removeEtl/{etlName}", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> removeEtl(@PathVariable("etlName") String etlName) {
+		LOG.info(">>>>controller removeEtl/{} is called", etlName);
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			initService.removeEtl(etlName);
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stackTrace={}", errMsg, stackTrace);
+		}
+		
+		LOG.info(">>>>controller removeEtl/{} finished ", etlName);
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/createTopic/{etlName}/{topic}", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> createTopic(@PathVariable("etlName") String etlName, @PathVariable("topic") String topic) {
+		LOG.info(">>>>controller createTopic/{}/{} is called", etlName,topic);
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			initService.createTopic(etlName, topic);
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stackTrace={}", errMsg, stackTrace);
+		}
+		
+		LOG.info(">>>>controller createTopic/{}/{} finished ", etlName,topic);
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/insertLogminerSyncTable/{etlName}/{table}", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> insertLogminerSyncTable(@PathVariable("etlName") String etlName, @PathVariable("table") String table) {
+		LOG.info(">>>>controller insertLogminerSyncTable/{}/{} is called", etlName,table);
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			initService.insertLogminerSyncTable(etlName, table);
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stackTrace={}", errMsg, stackTrace);
+		}
+		
+		LOG.info(">>>>controller insertLogminerSyncTable/{}/{} finished ", etlName,table);
 		
 		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
 	}

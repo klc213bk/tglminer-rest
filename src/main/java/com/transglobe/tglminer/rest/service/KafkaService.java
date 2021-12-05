@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +29,7 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.transglobe.tglminer.rest.bean.EtlNameBo.WithSyncEnum;
 import com.transglobe.tglminer.rest.util.HttpUtils;
 
 
@@ -37,9 +39,6 @@ public class KafkaService {
 	
 	@Value("${connect.rest.url}")
 	private String connectRestUrl;
-	
-	@Value("${kafka.rest.url}")
-	private String kafkaRestUrl;
 	
 	@Value("${kafka.server.home}")
 	private String kafkaServerHome;
@@ -53,7 +52,9 @@ public class KafkaService {
 
 	private Process createTopicProcess;
 	
-	public Map<String,String> getUpdatedConnectorConfigMap(String connectorName, Boolean resetOffset, Integer syncTableOption, Set<String> tableSet) throws Exception {
+	public Map<String,String> getUpdatedConnectorConfigMap(String connectorName, Boolean resetOffset, WithSyncEnum withSync, Set<String> tableSet) throws Exception {
+		
+		
 		Map<String,String> configmap = getConnectorConfig(connectorName);
 		LOG.info(">>>> configmap={}", configmap);
 
@@ -63,16 +64,18 @@ public class KafkaService {
 			configmap.put("reset.offset", "false");
 		}
 
-		if (syncTableOption == 1) {
+		if (WithSyncEnum.SYNC == withSync) {
 			String newsyncTables = String.join(",", tableSet);	
 			LOG.info(">>>> add sync table:{}", newsyncTables);
 
 			// "reset.offset", "table.whitelist"
-			String newtableWhitelist = configmap.get("table.whitelist") + "," + newsyncTables;
+			String newtableWhitelist = "";
+			newtableWhitelist = configmap.get("table.whitelist") + "," + newsyncTables;
+			newtableWhitelist = StringUtils.strip(newtableWhitelist, ",");
 			configmap.put("table.whitelist", newtableWhitelist);
 
 
-		} else if (syncTableOption == -1) {
+		} else if (WithSyncEnum.DROP_SYNC == withSync) {
 			LOG.info(">>>> remove sync tableSet:{}", String.join(",", tableSet));
 
 			String[] tableArr = configmap.get("table.whitelist").split(",");
@@ -80,6 +83,7 @@ public class KafkaService {
 			LOG.info(">>>> existing sync tableList:{}", String.join(",", tableList));
 
 			String newtableWhitelist = tableList.stream().filter(s -> !tableSet.contains(s)).collect(Collectors.joining(","));
+			newtableWhitelist = StringUtils.strip(newtableWhitelist, ",");
 			LOG.info(">>>> new newtableWhitelist={}", newtableWhitelist);
 
 			configmap.put("table.whitelist", newtableWhitelist);
@@ -114,6 +118,10 @@ public class KafkaService {
 	}
 	
 	public Map<String,String> getConnectorConfig(String connectorName) throws Exception {
+		
+		LOG.info(">>>>>>>>>>>> Sleep for 15 seconds for restarting");
+		Thread.sleep(15000);
+		
 		Map<String,String> configmap = new HashMap<>();
 		String urlStr = String.format(connectRestUrl+"/connectors/%s/config", connectorName);
 		LOG.info(">>>>>>>>>>>> urlStr={} ", urlStr);

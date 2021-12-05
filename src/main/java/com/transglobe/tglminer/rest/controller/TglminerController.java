@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
@@ -66,18 +68,16 @@ public class TglminerController {
 		
 		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
 	}
-	@PostMapping(value="/sendHeartbeat")
+	@PostMapping(path="/stopHealthService", produces=MediaType.APPLICATION_JSON_VALUE)
 	@ResponseBody
-	public ResponseEntity<Object> sendHeartbeat() throws Exception{
-		
-		LOG.info(">>>>controller sendHeartbeat is called");
+	public ResponseEntity<Object> stopHealthService() {
+		LOG.info(">>>>controller stopHealthService is called");
 		
 		ObjectNode objectNode = mapper.createObjectNode();
-		Long hbtime = null;
+		
 		try {
-			hbtime = healthService.sendHeartbeat();
+			tglminerService.stopHealthService();
 			objectNode.put("returnCode", "0000");
-			objectNode.put("heartbeatTime", hbtime);
 		} catch (Exception e) {
 			String errMsg = ExceptionUtils.getMessage(e);
 			String stackTrace = ExceptionUtils.getStackTrace(e);
@@ -87,11 +87,82 @@ public class TglminerController {
 			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
 		}
 		
-		LOG.info(">>>>controller sendHeartbeat finished ");
+		LOG.info(">>>>controller stopHealthService finished ");
 		
 		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
-	
 	}
+	@PostMapping(path="/applyLogminerSync/{etlName}", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> applyLogminerSync(@PathVariable("etlName") String etlName) {
+		LOG.info(">>>>controller applyLogminerSync is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			tglminerService.applyLogminerSync(etlName);
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller applyLogminerSync finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/dropLogminerSync/{etlName}", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> dropLogminerSync(@PathVariable("etlName") String etlName) {
+		LOG.info(">>>>controller dropLogminerSync is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			tglminerService.dropLogminerSync(etlName);
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller dropLogminerSync finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	@PostMapping(path="/checkToRestart", produces=MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> checkToRestart() {
+		LOG.info(">>>>controller checkToRestart is called");
+		
+		ObjectNode objectNode = mapper.createObjectNode();
+		
+		try {
+			tglminerService.checkToRestart();
+			objectNode.put("returnCode", "0000");
+		} catch (Exception e) {
+			String errMsg = ExceptionUtils.getMessage(e);
+			String stackTrace = ExceptionUtils.getStackTrace(e);
+			objectNode.put("returnCode", "-9999");
+			objectNode.put("errMsg", errMsg);
+			objectNode.put("returnCode", stackTrace);
+			LOG.error(">>> errMsg={}, stacktrace={}",errMsg,stackTrace);
+		}
+		
+		LOG.info(">>>>controller checkToRestart finished ");
+		
+		return new ResponseEntity<Object>(objectNode, HttpStatus.OK);
+	}
+	
+	
+	
 	@GetMapping(path="/listTopics", produces=MediaType.APPLICATION_JSON_VALUE)
 	@ResponseBody
 	public ResponseEntity<Object> listTopics() {

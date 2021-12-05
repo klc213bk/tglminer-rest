@@ -1,5 +1,7 @@
 package com.transglobe.tglminer.rest.service;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.sql.CallableStatement;
 import java.sql.Connection;
@@ -17,6 +19,7 @@ import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.commons.dbcp2.BasicDataSource;
 import org.apache.commons.lang3.exception.ExceptionUtils;
@@ -56,32 +59,29 @@ public class HealthService {
 	@Value("${kafka.bootstrap.server}")
 	private String kafkaBootstrapServer;
 
-	private BasicDataSource logminerConnPool;
+	private BasicDataSource tglminerConnPool;
 
 	private ExecutorService executor = null;
 
 	private KafkaHealthConsumer consumer = null;
-
-	private boolean heartbeatOn = false;
+	
+	private ExecutorService heartbeatExecutor;
 
 	public boolean startHealthConsumer() throws Exception {
 		LOG.info(">>>>>>>>>>>> startHealthConsumer...");
 		boolean result = true;
 
-		logminerConnPool = new BasicDataSource();
-		logminerConnPool.setUrl(tglminerDbUrl);
-		logminerConnPool.setDriverClassName(tglminerDbDriver);
-		logminerConnPool.setUsername(tglminerDbUsername);
-		logminerConnPool.setPassword(tglminerDbPassword);
-		logminerConnPool.setMaxTotal(3);
-
+		if (tglminerConnPool == null) {
+			tglminerConnPool = getConnectionPool();
+		}
+		
 		List<String> topicList = new ArrayList<>();
 		topicList.add(HealthTopicEnum.HEARTBEAT.getTopic());
 
 		executor = Executors.newFixedThreadPool(1);
 
 		//		String groupId1 = config.groupId1;
-		consumer = new KafkaHealthConsumer(CLIENT_ID, CONSUMER_GROUP, kafkaBootstrapServer, topicList, logminerConnPool);
+		consumer = new KafkaHealthConsumer(CLIENT_ID, CONSUMER_GROUP, kafkaBootstrapServer, topicList, tglminerConnPool);
 		executor.submit(consumer);
 
 		while (!consumer.consumerStarted()) {
@@ -89,13 +89,13 @@ public class HealthService {
 			Thread.sleep(1000);
 		}
 		
-		LOG.info(">>>>>>>>>>>> started Done!!!");
+		LOG.info(">>>>>>>>>>>> startHealthConsumer Done!!!");
 
 		Runtime.getRuntime().addShutdownHook(new Thread() {
 			@Override
 			public void run() {
 
-				shutdownHealthConsumer();
+				stopHealthConsumer();
 
 			}
 		});
@@ -104,20 +104,77 @@ public class HealthService {
 
 
 	}
-	public void setHeartbeatOn(boolean heartbeatOn) {
-		this.heartbeatOn = heartbeatOn;
+	public boolean startHeartbeat() throws Exception {
+		LOG.info(">>>>>>>>>>>> startHeartbeat...");
+		boolean result = true;
+
+		if (tglminerConnPool == null) {
+			tglminerConnPool = getConnectionPool();
+		}
+
+		heartbeatExecutor = Executors.newSingleThreadExecutor();
+		heartbeatExecutor.submit(new Runnable() {
+
+			@Override
+			public void run() {
+				
+				try {
+					while (true) {
+						sendHeartbeat();
+						Thread.sleep(60000);
+					}
+				} catch (Exception e) {
+					LOG.error(">>>>> Error!!!, error msg={}, stacetrace={}", ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+				}
+			}
+			private Long sendHeartbeat() throws Exception{
+				Connection conn = null;
+				CallableStatement cstmt = null;
+
+				try {	
+					conn = tglminerConnPool.getConnection();
+					cstmt = conn.prepareCall("{call SP_INS_HEALTH_HEARTBEAT(?)}");
+
+					long currMillis = System.currentTimeMillis();
+					cstmt.setTimestamp(1, new Timestamp(currMillis));
+					cstmt.execute();
+					
+					return currMillis;
+
+				} catch (Exception e1) {
+					LOG.error(">>>>> Error!!!, error msg={}, stacetrace={}", ExceptionUtils.getMessage(e1), ExceptionUtils.getStackTrace(e1));
+					throw e1;
+				} finally {
+					if (cstmt != null) cstmt.close();
+					if (conn != null) conn.close();
+				}
+
+			}
+		});
+		
+
+		Runtime.getRuntime().addShutdownHook(new Thread() {
+			@Override
+			public void run() {
+
+				stopHeartbeat();
+
+			}
+		});
+
+		return result;
+
+
 	}
-	public boolean heartbeatOnOff() {
-		return this.heartbeatOn;
-	}
-	public boolean shutdownHealthConsumer() {
-		LOG.info(">>>>>>>>>>>> shutdownHealthConsumer ");
+
+	public boolean stopHealthConsumer() {
+		LOG.info(">>>>>>>>>>>> stopHealthConsumer ");
 		boolean result = true;
 		if (executor != null && consumer != null) {
 			consumer.shutdown();
 
 			try {
-				if (logminerConnPool != null) logminerConnPool.close();
+				if (tglminerConnPool != null) tglminerConnPool.close();
 			} catch (Exception e) {
 				result = false;
 				LOG.error(">>>message={}, stack trace={}", e.getMessage(), ExceptionUtils.getStackTrace(e));
@@ -128,7 +185,36 @@ public class HealthService {
 				executor.shutdownNow();
 
 				try {
-					executor.awaitTermination(3000, TimeUnit.SECONDS);
+					executor.awaitTermination(300, TimeUnit.SECONDS);
+				} catch (InterruptedException e) {
+					result = false;
+					LOG.error(">>> ERROR!!!, msg={}, stacetrace={}",
+							ExceptionUtils.getMessage(e), ExceptionUtils.getStackTrace(e));
+				}
+			}
+		}
+		LOG.info(">>>>>>>>>>>> stopHealthConsumer done !!!");
+
+		return result;
+	}
+	public boolean stopHeartbeat() {
+		LOG.info(">>>>>>>>>>>> stopHeartbeat ");
+		boolean result = true;
+		if (heartbeatExecutor != null) {
+
+			try {
+				if (tglminerConnPool != null) tglminerConnPool.close();
+			} catch (Exception e) {
+				result = false;
+				LOG.error(">>>message={}, stack trace={}", e.getMessage(), ExceptionUtils.getStackTrace(e));
+			}
+
+			heartbeatExecutor.shutdown();
+			if (!heartbeatExecutor.isTerminated()) {
+				heartbeatExecutor.shutdownNow();
+
+				try {
+					heartbeatExecutor.awaitTermination(300, TimeUnit.SECONDS);
 				} catch (InterruptedException e) {
 					result = false;
 					LOG.error(">>> ERROR!!!, msg={}, stacetrace={}",
@@ -139,36 +225,22 @@ public class HealthService {
 
 		}
 
-		LOG.info(">>>>>>>>>>>> shutdownHealthConsumer done !!!");
+		LOG.info(">>>>>>>>>>>> stopHeartbeat done !!!");
 
 		return result;
 	}
-
-	public Long sendHeartbeat() throws Exception{
-		Connection conn = null;
-		CallableStatement cstmt = null;
-
-		try {	
-			Class.forName(tglminerDbDriver);
-			conn = DriverManager.getConnection(tglminerDbUrl, tglminerDbUsername, tglminerDbPassword);
-
-			cstmt = conn.prepareCall("{call SP_INS_HEALTH_HEARTBEAT(?)}");
-
-			long currMillis = System.currentTimeMillis();
-			cstmt.setTimestamp(1, new Timestamp(currMillis));
-			cstmt.execute();
-
-			return currMillis;
-
-		} catch (Exception e1) {
-			LOG.error(">>>>> Error!!!, error msg={}, stacetrace={}", ExceptionUtils.getMessage(e1), ExceptionUtils.getStackTrace(e1));
-			throw e1;
-		} finally {
-			if (cstmt != null) cstmt.close();
-			if (conn != null) conn.close();
-		}
-
+	
+	private BasicDataSource getConnectionPool() {
+		BasicDataSource connPool = new BasicDataSource();
+		connPool.setUrl(tglminerDbUrl);
+		connPool.setDriverClassName(tglminerDbDriver);
+		connPool.setUsername(tglminerDbUsername);
+		connPool.setPassword(tglminerDbPassword);
+		connPool.setMaxTotal(2);
+		
+		return connPool;
 	}
+	
 	
 	
 //	public void loadData() throws Exception{
@@ -259,6 +331,19 @@ public class HealthService {
 			if (conn != null) conn.close();
 		}
 	}
+	public boolean isConsumerClosed() throws Exception {
+		LOG.info(">>>>>>>>>>>> isConsumerClosed ");
+		
+		if (executor == null || executor.isTerminated()) {
+			return true;
+		} else {
+			if (consumer == null) {
+				return true;
+			} else {
+				return consumer.isConsumerClosed();
+			}
+		}
 
+	}
 
 }
